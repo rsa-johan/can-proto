@@ -1,0 +1,9 @@
+Enum_t NodeId = {
+    MCU = 0x10;
+}
+
+Byte Status = {
+    status_id = 0;
+    connected = 1;
+    disconnected = ;
+}

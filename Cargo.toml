@@ -1,0 +1,11 @@
+[package]
+name = "proto_c"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+proc-macro = true
+
+[features]
+debug = []
+default = ["debug"]

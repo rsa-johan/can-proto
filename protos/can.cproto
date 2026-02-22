@@ -1,0 +1,43 @@
+# --- convention parsing ---
+
+Enum_t NodeId = {
+    MCU = 0x01
+}
+
+Enum_t Priority = {
+    NORMAL = 0x00
+    URGENT = 0x01
+}
+
+Byte StatusId = {
+    Reserved = 0
+    StatusId = 1
+    Later = ..
+}
+
+Byte Version = {..}
+
+
+Byte FanError = {
+    Fan0Error = 0
+    Fan1Error = 1
+}
+
+# --- unconventional parsing ---
+
+ByteCol CoProc = {
+    StatusId
+    FanError
+}
+
+frame MockFrame = {
+    ID MockFrame
+    ByteCol CoProc
+}
+
+# --- len - mem parsing ---
+
+ID MockFrameId = {
+    NodeId::MCU[3] | Priority::NORMAL[7]
+}
+
