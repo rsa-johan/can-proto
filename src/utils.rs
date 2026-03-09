@@ -34,27 +34,25 @@ pub fn enum_template(enum_vars: &KeyValue) -> String {
         }}", enum_name, vars)
 }
 
-pub fn struct_template(struct_vars: &KeyValue) -> String {
+pub fn struct_template(struct_vars: &KeyValue, assign_val_to_type: bool) -> String {
     let struct_name = &struct_vars.key;
     println!("Generating struct template for struct: '{}'", struct_name);
     println!("Struct variables: {:#?}", struct_vars.value);
     println!("Struct variables key: {}", struct_vars.key);
     let vars = struct_vars.value.iter().map(|e| {
-        format!("pub {}: bool,", e.name)
+        format!("pub {}: {},", e.name, if !assign_val_to_type { "bool" } else { e.value.as_ref().unwrap() })
     }).collect::<Vec<String>>().join(ParseKeys::NewLine.into());
     format!("pub struct {} {{
             {}
         }}", struct_name, vars)
 }
 
-pub fn impl_u8_template(vars: &KeyValue) -> String {
+pub fn impl_u8_template(vars: &KeyValue, handler: &dyn Fn(&Variable) -> String) -> String {
     let name = &vars.key;
     println!("Generating impl template for enum: '{}'", name);
     println!("Impl variables: {:#?}", vars.value);
     println!("Impl variables key: {}", vars.key);
-    let vars = vars.value.iter().map(|e| {
-        format!("{} => {} as u8,", e.name, e.value.as_ref().unwrap())
-    }).collect::<Vec<String>>().join(ParseKeys::NewLine.into());
+    let vars = vars.value.iter().map(handler).collect::<Vec<String>>().join(ParseKeys::NewLine.into());
     format!("impl From<{}> for u8 {{
             fn from(value: {}) -> Self {{
                 match value {{
@@ -62,6 +60,32 @@ pub fn impl_u8_template(vars: &KeyValue) -> String {
                 }}
             }}
         }}", name, name, vars)
+}
+
+pub fn impl_u8_slice_template(vars: &KeyValue, handler: &dyn Fn(&Variable) -> String) -> String {
+    let name = &vars.key;
+    println!("Generating impl template for enum: '{}'", name);
+    println!("Impl variables: {:#?}", vars.value);
+    println!("Impl variables key: {}", vars.key);
+    let vars = vars.value.iter().map(handler).collect::<Vec<String>>().join(ParseKeys::NewLine.into());
+    format!("impl From<{}> for &[u8] {{
+            fn from(value: {}) -> Self {{
+                match value {{
+                    {}
+                }}
+            }}
+        }}", name, name, vars)
+}
+
+#[inline]
+pub fn trait_template() -> String {
+    "trait Frame {
+        pub fn can_id(&self) -> u32;
+    }
+
+    trait Parse {
+        pub fn parse(&mut self);
+    }".to_string()
 }
 
 pub fn impl_parse_template(vars: &KeyValue) -> String {

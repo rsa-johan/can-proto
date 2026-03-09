@@ -4,7 +4,10 @@ mod example {
     include_can_proto!("protos/dummy.cproto");
 }
 
-use example::*;
+use example::{
+    Status,
+    NodeId
+};
 
 fn main() {
     println!("Hello, world!");

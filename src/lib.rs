@@ -90,6 +90,9 @@ impl From<&str> for Variable {
         let val = value.trim().to_string();
         let mut parts: Vec<String> = val.trim().splitn(2, '=').map(|e| e.to_string()).collect();
         let value = parts.pop();
+        if value.is_none() {
+            panic!("Invalid variable format, expected 'name=value' or 'name'");
+        } 
         let name = parts.pop();
         match name {
             Some(val) => Variable { name: val, value },
@@ -212,8 +215,10 @@ impl KeyWords {
         result.push(ParseKeys::Debug.into());
 
         let enum_def = utils::enum_template(&s);
-        let impl_u8 = utils::impl_u8_template(&s);
-
+        let impl_u8 = utils::impl_u8_template(&s,
+            &|var| format!("{} => {} as u8,", var.name, var.value.as_ref().unwrap())
+        );
+        
         result.push(&enum_def);
         result.push(&impl_u8);
         result.push(ParseKeys::NewLine.into());
@@ -227,8 +232,10 @@ impl KeyWords {
         #[cfg(not(feature = "debug"))]
         result.push(ParseKeys::Default.into());
 
-        let enum_def = utils::struct_template(&s);
-        let impl_u8 = utils::impl_parse_template(&s);
+        let enum_def = utils::struct_template(&s, false);
+        let impl_u8 = utils::impl_u8_template(&s,
+            &|var| format!("self.{} = value & (0x01 << {}) != 0;", var.name, var.value.as_ref().unwrap())
+        );
 
         result.push(&enum_def);
         result.push(&impl_u8);
@@ -241,8 +248,10 @@ impl KeyWords {
         #[cfg(feature = "debug")]
         result.push(ParseKeys::Debug.into());
 
-        let struct_def = utils::struct_template(&s);
-        let impl_u8 = utils::impl_u8_template(&s);
+        let struct_def = utils::struct_template(&s, true);
+        let impl_u8 = utils::impl_u8_template(&s,
+            &|var| format!("self.{} => {}::default(),", var.name, var.value.as_ref().unwrap())
+        );
 
         result.push(&struct_def);
         result.push(&impl_u8);
@@ -254,8 +263,10 @@ impl KeyWords {
         #[cfg(feature = "debug")]
         result.push(ParseKeys::Debug.into());
 
-        let struct_def = utils::struct_template(&s);
-        let impl_u8 = utils::impl_u8_template(&s);
+        let struct_def = utils::struct_template(&s, true);
+        let impl_u8 = utils::impl_u8_template(&s,
+            &|var| format!("self.{} => {} as u8,", var.name, var.value.as_ref().unwrap())
+        );
 
         result.push(&struct_def);
         result.push(&impl_u8);
@@ -268,7 +279,9 @@ impl KeyWords {
         result.push(ParseKeys::Debug.into());
 
         let enum_def = utils::enum_template(&s);
-        let impl_u8 = utils::impl_u8_template(&s);
+        let impl_u8 = utils::impl_u8_template(&s,
+            &|var| format!("{} => {} as u8,", var.name, var.value.as_ref().unwrap())
+        );
 
         result.push(&enum_def);
         result.push(&impl_u8);
