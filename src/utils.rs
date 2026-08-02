@@ -1,26 +1,5 @@
 use crate::{KeyValue, ParseKeys, Variable};
 
-#[allow(dead_code)]
-pub fn p2s_case(s: String) -> String {
-    let mut idx = 0usize;
-    s.chars().enumerate().for_each(|(i, char)| {
-       if i == 0 {
-           if char.is_lowercase() {
-               panic!("Pascal Case should be followed")
-           }
-           return
-       }
-
-       if char.is_uppercase() {
-            idx = i;
-       } 
-    });
-    //let (part1, part2) = s.split_at(idx);
-    // part1.to_lowercase() + "_".into() + part2.to_lowercase()
-    String::new()
-}
-
-
 pub fn enum_template(enum_vars: &KeyValue) -> String {
     let enum_name = &enum_vars.key;
     println!("Generating enum template for enum: '{}'", enum_name);
@@ -65,6 +44,21 @@ pub fn impl_u8_template(vars: &KeyValue, handler: &dyn Fn(&Variable) -> String) 
 pub fn impl_u8_slice_template(vars: &KeyValue, handler: &dyn Fn(&Variable) -> String) -> String {
     let name = &vars.key;
     println!("Generating impl template for enum: '{}'", name);
+    println!("Impl variables: {:#?}", vars.value);
+    println!("Impl variables key: {}", vars.key);
+    let vars = vars.value.iter().map(handler).collect::<Vec<String>>().join(ParseKeys::NewLine.into());
+    format!("impl From<{}> for &[u8] {{
+            fn from(value: {}) -> Self {{
+                match value {{
+                    {}
+                }}
+            }}
+        }}", name, name, vars)
+}
+
+pub fn can_id_template(vars: &KeyValue, handler: &dyn Fn(&Variable) -> String) -> String {
+    let name = &vars.key;
+    println!("Generating impl template for can_id: '{}'", name);
     println!("Impl variables: {:#?}", vars.value);
     println!("Impl variables key: {}", vars.key);
     let vars = vars.value.iter().map(handler).collect::<Vec<String>>().join(ParseKeys::NewLine.into());

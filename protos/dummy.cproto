@@ -1,3 +1,7 @@
+Id CanId = {
+    
+}
+
 Enum_t NodeId = {
     MCU = 0x10;
 }
@@ -33,13 +37,10 @@ ByteCol TemperatureError = {
     temperature_error_1 = TemperatureError1;
 }
 
-Id CanId = {
-    can_id = NodeId::MCU[4] | Priority::Normal[4]
-}
 
 frame MockFrame {
-    
-    ByteCol TemperatureError
+    id = 
+    temperature_errors = TemperatureError
 }
 
 frame {
