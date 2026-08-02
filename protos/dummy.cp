@@ -6,7 +6,7 @@ def {0}StatusId:
 .nil
 
 def {1}ConnectionStatus:
-.connected 1 Connection
+.connected 0 Connection
 
 def {2,3}TemperatureError:
 [#2]
@@ -22,5 +22,6 @@ def {2,3}TemperatureError:
 .temp8 0
 
 frame CoprocStatus:
+.size 4
 .ConnectionStatus
 .TemperatureError
