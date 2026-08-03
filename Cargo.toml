@@ -9,3 +9,7 @@ proc-macro = true
 [features]
 debug = []
 default = ["debug"]
+
+[dependencies]
+strum = "0.28.0"
+strum_macros = "0.28.0"

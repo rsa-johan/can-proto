@@ -12,5 +12,5 @@ type Priority:
 .Low 0x02
 
 framedef root:
-.id {3}NodeId|{2}Priority
+.id '3 NodeId | '2 Priority
 .fd true
