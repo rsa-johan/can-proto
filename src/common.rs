@@ -1,0 +1,1 @@
+pub const PROTO_EXT: &str = "cp";

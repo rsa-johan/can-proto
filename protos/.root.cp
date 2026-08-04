@@ -1,5 +1,4 @@
-#big-endian
-
+#protocol=CAN
 
 type NodeId:
 .MC 0x01
