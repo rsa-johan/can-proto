@@ -6,8 +6,9 @@ pub enum ErrorSignals {
     InvalidHeader,
 
     UnidentifiableHeader,
+    EmptyHeader,
 
-
+    RootFileNotFound,
     NoError
 }
 

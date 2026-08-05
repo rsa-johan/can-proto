@@ -1,9 +1,5 @@
 use strum_macros::EnumIter;
 
-pub trait AnyKeyWord {
-   fn any(s: String) -> Option<Self>;
-}
-
 
 #[derive(EnumIter, Debug, Clone)]
 pub enum KeyWords {
@@ -13,6 +9,7 @@ pub enum KeyWords {
     Dot,
     FrameDef,
     Frame,
+    Nil
 }
 
 #[derive(EnumIter, Debug, Clone)]
@@ -20,7 +17,8 @@ pub enum FrameKeyWords {
     Size,
     Id,
     Fd,
-    SizeMark
+    SizeMark,
+    Nil
 }
 
 
@@ -33,19 +31,21 @@ impl From<KeyWords> for &str {
             KeyWords::Dot => ".",
             KeyWords::FrameDef => "framedef",
             KeyWords::Frame => "frame",
+            KeyWords::Nil => "nil",
         }
     }
 }
 
 impl From<&str> for KeyWords {
     fn from(value: &str) -> Self {
-        match value {
-            "type" => Type,
-            "def" => Def,
-            "#" => Hash,
-            "." => Dot,
-            "framedef" => FrameDef,
-            "frame" => Frame
+        match value.to_lowercase().as_str() {
+            "type" => KeyWords::Type,
+            "def" => KeyWords::Def,
+            "#" => KeyWords::Hash,
+            "." => KeyWords::Dot,
+            "framedef" => KeyWords::FrameDef,
+            "frame" => KeyWords::Frame,
+            _ => KeyWords::Nil
         }
     }
 }
@@ -57,7 +57,20 @@ impl From<FrameKeyWords> for &str {
             FrameKeyWords::Size => "size",
             FrameKeyWords::Id => "id",
             FrameKeyWords::Fd => "fd",
-            FrameKeyWords::SizeMark => "'"
+            FrameKeyWords::SizeMark => "'",
+            FrameKeyWords::Nil => "nil",
+        }
+    }
+}
+
+impl From<&str> for FrameKeyWords {
+    fn from(value: &str) -> Self {
+        match value.to_lowercase().as_str() {
+            "size" => FrameKeyWords::Size,
+            "id" => FrameKeyWords::Id,
+            "fd" => FrameKeyWords::Fd,
+            "'" => FrameKeyWords::SizeMark,
+            _ => FrameKeyWords::Nil
         }
     }
 }

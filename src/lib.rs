@@ -8,10 +8,14 @@ use std::{path::Path};
 
 use proc_macro::TokenStream;
 
-fn compile_proto(proto_content: TokenStream) {
-   
+use crate::init::{root_check, fetch_header};
+
+fn compile_proto(_proto_content: TokenStream) {
+   todo!()
 }
 
-fn compile(proto_dir: impl Into<Path>) {
-
+fn compile(p_dir: &'static str) -> Result<(), error::ErrorSignals> {
+    let root_content = root_check(Path::new(p_dir))?; 
+    fetch_header(root_content);
+    Ok(())
 }
