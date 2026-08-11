@@ -29,7 +29,7 @@ pub fn root_check(c_dir: &Path) -> Result<String, ErrorSignals>{
 }
 
 pub fn fetch_header(h_sect: String) -> Result<(), ErrorSignals> {
-    todo!()
+
 }
 
 

@@ -1,3 +1,5 @@
+#class=status
+
 type Connection:
 .connected 1
 .disconnected 0

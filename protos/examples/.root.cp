@@ -1,5 +1,3 @@
-#protocol=CAN
-
 type NodeId:
 .MC 0x01
 .Coproc 0x02
@@ -12,4 +10,3 @@ type Priority:
 
 framedef root:
 .id '3 NodeId | '2 Priority
-.fd true

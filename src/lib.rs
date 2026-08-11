@@ -16,6 +16,6 @@ fn compile_proto(_proto_content: TokenStream) {
 
 fn compile(p_dir: &'static str) -> Result<(), error::ErrorSignals> {
     let root_content = root_check(Path::new(p_dir))?; 
-    fetch_header(root_content);
+    let _ = fetch_header(root_content)?;
     Ok(())
 }

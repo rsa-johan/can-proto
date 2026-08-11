@@ -9,7 +9,8 @@ pub enum KeyWords {
     Dot,
     FrameDef,
     Frame,
-    Nil
+    Nil,
+    Equals
 }
 
 #[derive(EnumIter, Debug, Clone)]
@@ -32,6 +33,7 @@ impl From<KeyWords> for &str {
             KeyWords::FrameDef => "framedef",
             KeyWords::Frame => "frame",
             KeyWords::Nil => "nil",
+            KeyWords::Equals => "="
         }
     }
 }
@@ -45,6 +47,7 @@ impl From<&str> for KeyWords {
             "." => KeyWords::Dot,
             "framedef" => KeyWords::FrameDef,
             "frame" => KeyWords::Frame,
+            "=" => KeyWords::Equals,
             _ => KeyWords::Nil
         }
     }
