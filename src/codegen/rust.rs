@@ -217,12 +217,19 @@ fn decode_expr(model: &Model, f: &FieldIr) -> String {
     }
 }
 
-/// `{prefix}ID_MASK`/`{prefix}ID_MATCH` consts and a `fn_name(id, data) -> bool` check.
+/// `{prefix}ID_MASK`/`{prefix}ID_MATCH`/`{prefix}EXTENDED` consts and a `fn_name(id, extended, data)` check.
 fn gen_matches(o: &mut String, f: &FilterIr, prefix: &str, fn_name: &str) {
     let _ = writeln!(o, "    /// Hardware acceptance filter: `(id & {prefix}ID_MASK) == {prefix}ID_MATCH`.");
     let _ = writeln!(o, "    pub const {prefix}ID_MASK: u32 = 0x{:X};", f.id_mask);
-    let _ = writeln!(o, "    pub const {prefix}ID_MATCH: u32 = 0x{:X};\n", f.id_match);
+    let _ = writeln!(o, "    pub const {prefix}ID_MATCH: u32 = 0x{:X};", f.id_match);
+    let _ = writeln!(o, "    /// Required id type: `Some(true)` extended (29-bit), `Some(false)` standard (11-bit).");
+    let _ = writeln!(o, "    pub const {prefix}EXTENDED: Option<bool> = {:?};\n", f.ext);
     let mut conds = Vec::new();
+    match f.ext {
+        Some(true) => conds.push("extended".to_string()),
+        Some(false) => conds.push("!extended".to_string()),
+        None => {}
+    }
     if f.id_mask != 0 {
         conds.push(format!("(id & Self::{prefix}ID_MASK) == Self::{prefix}ID_MATCH"));
     }
@@ -233,9 +240,11 @@ fn gen_matches(o: &mut String, f: &FilterIr, prefix: &str, fn_name: &str) {
         conds.push(format!("(data[{i}] & 0x{m:02X}) == 0x{v:02X}"));
     }
     let id = if f.id_mask != 0 { "id" } else { "_id" };
+    let extended = if f.ext.is_some() { "extended" } else { "_extended" };
     let data = if f.data_len() > 0 { "data" } else { "_data" };
+    let body = if conds.is_empty() { "true".to_string() } else { conds.join("\n            && ") };
     let _ = writeln!(o, "    /// True if a received frame passes this filter.");
-    let _ = writeln!(o, "    pub fn {fn_name}({id}: u32, {data}: &[u8]) -> bool {{\n        {}\n    }}\n", conds.join("\n            && "));
+    let _ = writeln!(o, "    pub fn {fn_name}({id}: u32, {extended}: bool, {data}: &[u8]) -> bool {{\n        {body}\n    }}\n");
 }
 
 fn stamp_lines(f: &FilterIr, indent: &str) -> String {

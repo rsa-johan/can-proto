@@ -1,5 +1,6 @@
 #protocol=can
 #inc=common
+#id=standard
 
 type Connection:
 .connected 1

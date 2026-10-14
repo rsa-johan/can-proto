@@ -6,6 +6,8 @@ pub struct Proto {
     pub includes: Vec<(String, usize)>,
     /// `#endian=big` file default; applies to fields, data conditions and fn payloads.
     pub big_endian: bool,
+    /// `#id=standard|extended` file default for filter expressions that leave `.ext` open.
+    pub extended_id: Option<bool>,
     pub items: Vec<Item>,
 }
 
@@ -168,6 +170,8 @@ pub enum Target {
     Id,
     /// Data byte the bit spec is relative to.
     Data(usize),
+    /// The id type flag (IDE): `true` = 29-bit extended, `false` = 11-bit standard.
+    Ext,
 }
 
 /// `A(args) | B | C(args)` at a use site.
@@ -175,6 +179,8 @@ pub enum Target {
 pub struct FilterExpr {
     pub line: usize,
     pub calls: Vec<FilterCall>,
+    /// File's `#id=` default, applied when no call sets `.ext`.
+    pub ext_default: Option<bool>,
 }
 
 #[derive(Debug, Clone)]

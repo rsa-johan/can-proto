@@ -28,6 +28,7 @@ The compiler is also a library for use from `build.rs` or a proc-macro. `proto_c
 #protocol=can        -- optional; `#ignore=` skips the file
 #inc=common          -- common.inc.cp from the same directory (nesting allowed, cycles rejected)
 #endian=big          -- default byte order of this file (little if omitted)
+#id=standard         -- id type for this file's `.filter`/`.rsp` that don't set `.ext` (or `extended`)
 ```
 
 `.inc.cp` files may contain `type`, `def`, `spec` and `filter`, but not `frame` or `fn`. Each is generated once and imported by the files that include it.
@@ -78,9 +79,12 @@ filter Node(node: NodeId):
 
 filter Tag(tag: u8):
 .data {0} 0..4 tag          -- payload byte 0, bits 0..3
+
+filter Extended:
+.ext                        -- id type: `.ext` / `.ext true` = 29-bit, `.ext false` = 11-bit
 ```
 
-Values can be literals, parameters, `spec.x` or `Type.Variant`.
+Values can be literals, parameters, `spec.x` or `Type.Variant`. A filter that doesn't set `.ext` (and isn't covered by `#id=`) accepts both id types. Filters for standard ids may only check id bits 0..10.
 
 Filters are combined with `|` at the point of use:
 

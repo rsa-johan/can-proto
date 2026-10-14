@@ -13,6 +13,7 @@ type Result<T> = std::result::Result<T, ErrorSignals>;
 
 const MAX_ENUM_VALUE: u64 = i32::MAX as u64;
 const ID_BITS: u32 = 29;
+const STD_ID_BITS: u32 = 11;
 const MAX_PAYLOAD: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -285,6 +286,8 @@ pub struct SpecIr {
 pub struct FilterIr {
     pub id_mask: u32,
     pub id_match: u32,
+    /// Required id type: `Some(true)` extended, `Some(false)` standard, `None` either.
+    pub ext: Option<bool>,
     pub data_mask: Vec<u8>,
     pub data_match: Vec<u8>,
 }
@@ -296,6 +299,9 @@ impl FilterIr {
 
     /// True if some frame could pass both filters.
     pub fn overlaps(&self, o: &Self) -> bool {
+        if matches!((self.ext, o.ext), (Some(a), Some(b)) if a != b) {
+            return false;
+        }
         if (self.id_mask & o.id_mask) & (self.id_match ^ o.id_match) != 0 {
             return false;
         }
@@ -640,38 +646,54 @@ fn resolve_def(d: &Def, external: bool, ctx: &Ctx) -> Result<DefIr> {
 struct Acc {
     id_mask: u32,
     id_match: u32,
+    ext: Option<bool>,
     data_mask: [u8; MAX_PAYLOAD],
     data_match: [u8; MAX_PAYLOAD],
 }
 
 impl Acc {
     fn new() -> Self {
-        Self { id_mask: 0, id_match: 0, data_mask: [0; MAX_PAYLOAD], data_match: [0; MAX_PAYLOAD] }
+        Self { id_mask: 0, id_match: 0, ext: None, data_mask: [0; MAX_PAYLOAD], data_match: [0; MAX_PAYLOAD] }
     }
 
-    fn set(&mut self, target: Target, bits: &[usize], pattern: u64) -> std::result::Result<(), String> {
+    fn set_ext(&mut self, ext: bool) -> std::result::Result<(), String> {
+        if self.ext.replace(ext).is_some_and(|cur| cur != ext) {
+            return Err("conflicting values for `.ext`".into());
+        }
+        Ok(())
+    }
+
+    /// Standard ids only have bits 0..11.
+    fn check_std(&self) -> std::result::Result<(), String> {
+        let high = self.id_mask >> STD_ID_BITS;
+        if self.ext == Some(false) && high != 0 {
+            let bit = STD_ID_BITS + 31 - high.leading_zeros();
+            return Err(format!("standard (11-bit) ids have no bit {bit}; use `.ext` or `#id=extended`"));
+        }
+        Ok(())
+    }
+
+    fn set(&mut self, data: bool, bits: &[usize], pattern: u64) -> std::result::Result<(), String> {
         for (i, &pos) in bits.iter().enumerate() {
             let want = (pattern >> i) & 1 != 0;
-            let (set, cur, what) = match target {
-                Target::Id => (self.id_mask >> pos & 1 != 0, self.id_match >> pos & 1 != 0, format!("id bit {pos}")),
-                Target::Data(_) => (
+            let (set, cur, what) = if data {
+                (
                     self.data_mask[pos / 8] >> (pos % 8) & 1 != 0,
                     self.data_match[pos / 8] >> (pos % 8) & 1 != 0,
                     format!("data byte {} bit {}", pos / 8, pos % 8),
-                ),
+                )
+            } else {
+                (self.id_mask >> pos & 1 != 0, self.id_match >> pos & 1 != 0, format!("id bit {pos}"))
             };
             if set && cur != want {
                 return Err(format!("conflicting values for {what}"));
             }
-            match target {
-                Target::Id => {
-                    self.id_mask |= 1 << pos;
-                    self.id_match |= u32::from(want) << pos;
-                }
-                Target::Data(_) => {
-                    self.data_mask[pos / 8] |= 1 << (pos % 8);
-                    self.data_match[pos / 8] |= u8::from(want) << (pos % 8);
-                }
+            if data {
+                self.data_mask[pos / 8] |= 1 << (pos % 8);
+                self.data_match[pos / 8] |= u8::from(want) << (pos % 8);
+            } else {
+                self.id_mask |= 1 << pos;
+                self.id_match |= u32::from(want) << pos;
             }
         }
         Ok(())
@@ -682,6 +704,7 @@ impl Acc {
         FilterIr {
             id_mask: self.id_mask,
             id_match: self.id_match,
+            ext: self.ext,
             data_mask: self.data_mask[..len].to_vec(),
             data_match: self.data_match[..len].to_vec(),
         }
@@ -691,6 +714,7 @@ impl Acc {
 /// Id bit or payload bit for each value bit of a condition, LSB first.
 fn cond_bits(c: &Cond) -> std::result::Result<Vec<usize>, String> {
     match c.target {
+        Target::Ext => Ok(Vec::new()),
         Target::Id => {
             let (start, width) = match c.bits {
                 BitSpec::Full => (0, ID_BITS),
@@ -815,12 +839,21 @@ fn pattern(v: Val, width: u32) -> std::result::Result<u64, String> {
 fn apply(f: &FilterDef, args: &[Val], acc: &mut Acc, ctx: &Ctx) -> std::result::Result<(), (usize, String)> {
     let env: HashMap<&str, Val> = f.params.iter().map(|p| p.name.as_str()).zip(args.iter().copied()).collect();
     for c in &f.conds {
-        let bits = cond_bits(c).map_err(|e| (c.line, e))?;
         let val = eval(&c.value, &env, None, ctx).map_err(|e| (c.line, e))?;
+        if c.target == Target::Ext {
+            let ext = match val {
+                Val::Bool(b) => b,
+                Val::Int(n @ (0 | 1)) => n == 1,
+                _ => return Err((c.line, "`.ext` needs a boolean".into())),
+            };
+            acc.set_ext(ext).map_err(|e| (c.line, e))?;
+            continue;
+        }
+        let bits = cond_bits(c).map_err(|e| (c.line, e))?;
         let pat = pattern(val, bits.len() as u32).map_err(|e| (c.line, e))?;
-        acc.set(c.target, &bits, pat).map_err(|e| (c.line, e))?;
+        acc.set(matches!(c.target, Target::Data(_)), &bits, pat).map_err(|e| (c.line, e))?;
     }
-    Ok(())
+    acc.check_std().map_err(|e| (f.line, e))
 }
 
 fn validate_filter(f: &FilterDef, ctx: &Ctx) -> Result<()> {
@@ -868,6 +901,10 @@ fn eval_expr(expr: &FilterExpr, ctx: &Ctx) -> Result<FilterIr> {
         apply(f, &args, &mut acc, ctx)
             .map_err(|(_, e)| ErrorSignals::at(ln, format!("in filter `{}`: {e}", f.name)))?;
     }
+    if acc.ext.is_none() {
+        acc.ext = expr.ext_default;
+    }
+    acc.check_std().map_err(|e| ErrorSignals::at(ln, e))?;
     Ok(acc.finish())
 }
 

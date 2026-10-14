@@ -194,12 +194,27 @@ fn gen_def(o: &mut String, model: &Model, d: &DefIr) {
     let _ = writeln!(o, "    return PROTO_C_OK;\n}}");
 }
 
-/// `{macro_}_ID_MASK`/`_ID_MATCH` defines and a `fn_name(id, data, len)` check.
+/// `{macro_}_ID_MASK`/`_ID_MATCH`/`_EXTENDED` defines and a `fn_name(id, extended, data, len)` check.
 fn gen_matches(o: &mut String, f: &FilterIr, macro_: &str, fn_name: &str) {
     let _ = writeln!(o, "/* Hardware acceptance filter: (id & {macro_}_ID_MASK) == {macro_}_ID_MATCH */");
     let _ = writeln!(o, "#define {macro_}_ID_MASK 0x{:X}u", f.id_mask);
-    let _ = writeln!(o, "#define {macro_}_ID_MATCH 0x{:X}u\n", f.id_match);
-    let _ = writeln!(o, "static inline bool {fn_name}(uint32_t id, const uint8_t *data, size_t len) {{");
+    let _ = writeln!(o, "#define {macro_}_ID_MATCH 0x{:X}u", f.id_match);
+    if let Some(ext) = f.ext {
+        let _ = writeln!(o, "/* Required id type: 1 = extended (29-bit), 0 = standard (11-bit) */");
+        let _ = writeln!(o, "#define {macro_}_EXTENDED {}", u8::from(ext));
+    }
+    let _ = writeln!(o, "\nstatic inline bool {fn_name}(uint32_t id, bool extended, const uint8_t *data, size_t len) {{");
+    match f.ext {
+        Some(true) => {
+            let _ = writeln!(o, "    if (!extended) return false;");
+        }
+        Some(false) => {
+            let _ = writeln!(o, "    if (extended) return false;");
+        }
+        None => {
+            let _ = writeln!(o, "    (void)extended;");
+        }
+    }
     if f.id_mask != 0 {
         let _ = writeln!(o, "    if ((id & {macro_}_ID_MASK) != {macro_}_ID_MATCH) return false;");
     } else {

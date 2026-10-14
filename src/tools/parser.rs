@@ -4,6 +4,7 @@
 //! #protocol=can                  -- optional directives, before any block
 //! #inc=common                    -- include common.inc.cp from the same directory
 //! #endian=big                    -- default byte order of this file (little if omitted)
+//! #id=standard|extended          -- id type for `.filter`/`.rsp` that leave `.ext` open
 //! type Name:                     -- enum
 //! .variant <int>
 //! def {b0[,b1..]} Name:          -- bit-field group pinned to payload bytes
@@ -14,6 +15,7 @@
 //! filter Name[(p: Type, ..)]:    -- raw bit matches, independent of other filters
 //! .id <bits> <value>
 //! .data {b} <bits> <value> [big|little]
+//! .ext [value]                   -- id type: true = extended (29-bit), false = standard
 //! frame Name:
 //! .size 'N | .fd [bool] | .filter A | B(args) | .DefName
 //! fn Name(p: Type, ..): Ret|Void
@@ -27,8 +29,8 @@ use crate::{
 
 use super::{
     ast::{
-        Cond, Def, Field, FilterCall, FilterDef, FilterExpr, FnDef, Frame, Item, Param, Proto, Spec, SpecEntry,
-        Target, TypeDef, Variant,
+        BitSpec, Cond, Def, Field, FilterCall, FilterDef, FilterExpr, FnDef, Frame, Item, Literal, Param, Proto, Spec,
+        SpecEntry, Target, TypeDef, Value, Variant,
     },
     keywords::{FrameKeyWords, KeyWords},
     syntax::{is_ident, parse_bits, parse_byte_list, parse_int, parse_literal, parse_value, strip_comment},
@@ -38,6 +40,7 @@ type Result<T> = std::result::Result<T, ErrorSignals>;
 
 const INC_DIRECTIVE: &str = "#inc=";
 const ENDIAN_DIRECTIVE: &str = "#endian=";
+const ID_DIRECTIVE: &str = "#id=";
 const BIG: &str = "big";
 const LITTLE: &str = "little";
 
@@ -78,6 +81,14 @@ pub fn parse(src: &str) -> Result<Proto> {
                     .ok_or_else(|| ErrorSignals::at(ln, format!("expected `#endian={BIG}` or `#endian={LITTLE}`")))?;
                 continue;
             }
+            if let Some(kind) = line.strip_prefix(ID_DIRECTIVE) {
+                proto.extended_id = Some(match kind.trim() {
+                    "standard" => false,
+                    "extended" => true,
+                    _ => return Err(ErrorSignals::at(ln, "expected `#id=standard` or `#id=extended`")),
+                });
+                continue;
+            }
             match type_protocol(line) {
                 Ok(Protocols::Can) => continue,
                 Ok(Protocols::Nil) => return Err(ErrorSignals::at(ln, "unsupported protocol (only `can`)")),
@@ -110,7 +121,7 @@ pub fn parse(src: &str) -> Result<Proto> {
             let Some(item) = cur.as_mut() else {
                 return Err(ErrorSignals::at(ln, "member line outside of a block"));
             };
-            parse_member(item, section, member, proto.big_endian, ln)?;
+            parse_member(item, section, member, &proto, ln)?;
             continue;
         }
 
@@ -233,7 +244,7 @@ fn parse_fn_header(s: &str, big: bool, ln: usize) -> Result<Item> {
 }
 
 /// `A | B(x, y) | C`
-fn parse_filter_expr(s: &str, ln: usize) -> Result<FilterExpr> {
+fn parse_filter_expr(s: &str, ext_default: Option<bool>, ln: usize) -> Result<FilterExpr> {
     let calls = s
         .split('|')
         .map(|call| {
@@ -257,10 +268,12 @@ fn parse_filter_expr(s: &str, ln: usize) -> Result<FilterExpr> {
             Ok(FilterCall { name: ident(name.trim(), ln)?, args })
         })
         .collect::<Result<_>>()?;
-    Ok(FilterExpr { line: ln, calls })
+    Ok(FilterExpr { line: ln, calls, ext_default })
 }
 
-fn parse_member(item: &mut Item, section: Option<usize>, member: &str, big_default: bool, ln: usize) -> Result<()> {
+/// File-level defaults applied while parsing members.
+fn parse_member(item: &mut Item, section: Option<usize>, member: &str, file: &Proto, ln: usize) -> Result<()> {
+    let big_default = file.big_endian;
     let toks: Vec<&str> = member.split_whitespace().collect();
     let Some((&name, args)) = toks.split_first() else {
         return Err(ErrorSignals::at(ln, "empty member line"));
@@ -303,6 +316,15 @@ fn parse_member(item: &mut Item, section: Option<usize>, member: &str, big_defau
             s.entries.push(SpecEntry { name, line: ln, value, ty });
         }
         Item::Filter(f) => {
+            if let FrameKeyWords::Ext = FrameKeyWords::from(name.as_str()) {
+                let value = match args {
+                    [] => Value::Lit(Literal::Bool(true)),
+                    [v] => parse_value(v).ok_or_else(|| ErrorSignals::at(ln, format!("invalid value `{v}`")))?,
+                    _ => return Err(ErrorSignals::at(ln, "expected `.ext [value]`")),
+                };
+                f.conds.push(Cond { line: ln, target: Target::Ext, bits: BitSpec::Bit(0), value, big: false });
+                return Ok(());
+            }
             let (args, big) = match args.split_last() {
                 Some((last, rest)) if endian(last).is_some() => (rest, endian(last).unwrap_or(big_default)),
                 _ => (args, big_default),
@@ -319,7 +341,7 @@ fn parse_member(item: &mut Item, section: Option<usize>, member: &str, big_defau
                 _ => {
                     return Err(ErrorSignals::at(
                         ln,
-                        "expected `.id <bits> <value>` or `.data {byte} <bits> <value> [big|little]`",
+                        "expected `.id <bits> <value>`, `.data {byte} <bits> <value> [big|little]` or `.ext [value]`",
                     ))
                 }
             };
@@ -341,7 +363,7 @@ fn parse_member(item: &mut Item, section: Option<usize>, member: &str, big_defau
             }
             FrameKeyWords::Fd => f.fd = flag(args, ln)?,
             FrameKeyWords::Filter => {
-                if f.filter.replace(parse_filter_expr(rest, ln)?).is_some() {
+                if f.filter.replace(parse_filter_expr(rest, file.extended_id, ln)?).is_some() {
                     return Err(ErrorSignals::at(ln, "duplicate `.filter`"));
                 }
             }
@@ -355,7 +377,7 @@ fn parse_member(item: &mut Item, section: Option<usize>, member: &str, big_defau
         },
         Item::Fn(f) => match FrameKeyWords::from(name.as_str()) {
             FrameKeyWords::Rsp => {
-                if f.rsp.replace(parse_filter_expr(rest, ln)?).is_some() {
+                if f.rsp.replace(parse_filter_expr(rest, file.extended_id, ln)?).is_some() {
                     return Err(ErrorSignals::at(ln, "duplicate `.rsp`"));
                 }
             }

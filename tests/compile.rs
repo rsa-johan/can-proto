@@ -40,6 +40,20 @@ fn signed_and_big_endian_fields() {
 }
 
 #[test]
+fn id_type_separates_filters() {
+    let src = "#id=extended\nfilter A:\n.id 0..11 1\nfilter Std:\n.ext false\ndef {0} D:\n.x 0\n\
+               frame X:\n.filter A\n.D\nframe Y:\n.filter A | Std\n.D\n";
+    let g = proto_c::compile_str(src, "t", "t.cp").unwrap();
+    assert!(g.rust.contains("pub const FILTER_EXTENDED: Option<bool> = Some(true);"));
+    assert!(g.rust.contains("pub const FILTER_EXTENDED: Option<bool> = Some(false);"));
+    assert!(g.c.contains("if (extended) return false;"));
+
+    let err = proto_c::compile_str("#id=standard\nfilter H:\n.id 11 1\ndef {0} D:\n.x 0\nframe F:\n.filter H\n.D\n", "t", "t.cp")
+        .unwrap_err();
+    assert!(err.to_string().contains("standard (11-bit) ids have no bit 11"), "{err}");
+}
+
+#[test]
 fn rejects_conflicting_pipe() {
     let src = "filter A:\n.id 0 1\nfilter B:\n.id 0 0\ndef {0} D:\n.x 0\nframe X:\n.filter A | B\n.D\n";
     let err = proto_c::compile_str(src, "t", "t.cp").unwrap_err();
