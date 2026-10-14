@@ -50,6 +50,24 @@ impl IntTy {
             Self::U64 => "uint64_t",
         }
     }
+
+    pub fn rust_signed(self) -> &'static str {
+        match self {
+            Self::U8 => "i8",
+            Self::U16 => "i16",
+            Self::U32 => "i32",
+            Self::U64 => "i64",
+        }
+    }
+
+    pub fn c_signed(self) -> &'static str {
+        match self {
+            Self::U8 => "int8_t",
+            Self::U16 => "int16_t",
+            Self::U32 => "int32_t",
+            Self::U64 => "int64_t",
+        }
+    }
 }
 
 /// Fixed-size standard types used by `spec`, filter parameters and fn parameters.
@@ -184,16 +202,33 @@ pub struct EnumIr {
 pub enum FieldTy {
     Bool,
     Uint(IntTy),
+    /// Two's complement, sign-extended from the field width into this storage size.
+    Sint(IntTy),
     Enum(usize),
 }
 
 #[derive(Debug)]
 pub struct FieldIr {
     pub name: String,
-    /// Absolute bit position in the payload (`byte * 8 + bit`, bit 0 = LSB).
-    pub pos: usize,
+    /// Section byte the bit spec is relative to.
+    pub byte: usize,
+    /// Start bit (LSB of the value) counted from the section byte's bit 0.
+    pub start: u32,
     pub width: u32,
+    /// Big-endian: the section byte is the most significant byte of the field.
+    pub big: bool,
     pub ty: FieldTy,
+}
+
+/// Payload bit (`byte * 8 + bit`) holding value bit `i` of a field.
+///
+/// Bits are numbered LSB-first across the bytes spanned from the section byte, which are
+/// read as one little- or big-endian number.
+pub fn phys_bit(byte: usize, start: u32, width: u32, big: bool, i: u32) -> usize {
+    let l = start + i;
+    let span = (start + width).div_ceil(8) as usize;
+    let b = if big { byte + span - 1 - (l / 8) as usize } else { byte + (l / 8) as usize };
+    b * 8 + (l % 8) as usize
 }
 
 /// A slice of a field that lives in a single payload byte.
@@ -209,20 +244,19 @@ pub struct Chunk {
 }
 
 impl FieldIr {
-    /// Splits the field into per-byte chunks, little-endian (low value bits in the lowest byte).
+    pub fn bit_pos(&self, i: u32) -> usize {
+        phys_bit(self.byte, self.start, self.width, self.big, i)
+    }
+
+    /// Splits the field into per-byte chunks of consecutive value bits.
     pub fn chunks(&self) -> Vec<Chunk> {
-        let mut out = Vec::new();
-        let (mut pos, end) = (self.pos, self.pos + self.width as usize);
-        while pos < end {
-            let shift = (pos % 8) as u32;
-            let n = (8 - shift).min((end - pos) as u32);
-            out.push(Chunk {
-                byte: pos / 8,
-                shift,
-                mask: (((1u16 << n) - 1) & 0xFF) as u8,
-                vshift: (pos - self.pos) as u32,
-            });
-            pos += n as usize;
+        let mut out: Vec<Chunk> = Vec::new();
+        for i in 0..self.width {
+            let p = self.bit_pos(i);
+            match out.last_mut() {
+                Some(c) if c.byte == p / 8 => c.mask = (c.mask << 1) | 1,
+                _ => out.push(Chunk { byte: p / 8, shift: (p % 8) as u32, mask: 1, vshift: i }),
+            }
         }
         out
     }
@@ -309,6 +343,8 @@ pub struct FnIr {
     pub rsp: Option<FilterIr>,
     pub rsp_size: usize,
     pub fd: bool,
+    /// Byte order of standard-type parameters and return values.
+    pub big: bool,
     pub external: bool,
 }
 
@@ -500,6 +536,12 @@ fn lookup_enum(ctx: &Ctx, ty: &str, ln: usize) -> Result<usize> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum FieldAnn {
+    Enum(usize),
+    Prim(Prim),
+}
+
 fn resolve_def(d: &Def, external: bool, ctx: &Ctx) -> Result<DefIr> {
     let mut seen_bytes = HashSet::new();
     if let Some(b) = d.bytes.iter().find(|b| !seen_bytes.insert(**b)) {
@@ -519,11 +561,26 @@ fn resolve_def(d: &Def, external: bool, ctx: &Ctx) -> Result<DefIr> {
         if !names.insert(f.name.as_str()) {
             return Err(ErrorSignals::at(f.line, format!("duplicate field `{}`", f.name)));
         }
-        let enum_ty = f.ty.as_deref().map(|ty| lookup_enum(ctx, ty, f.line)).transpose()?;
-        let enum_width = enum_ty.map(|i| ctx.model.enums[i].width);
+        let ann = match f.ty.as_deref() {
+            None => None,
+            Some(t) => match Prim::parse(t) {
+                Some(p) if p.is_float() => {
+                    return Err(ErrorSignals::at(f.line, "float fields are not supported in a `def`; use a fn parameter"));
+                }
+                Some(p) => Some(FieldAnn::Prim(p)),
+                None => Some(FieldAnn::Enum(lookup_enum(ctx, t, f.line)?)),
+            },
+        };
+        // Bits the annotated type needs (enum) or provides (standard type).
+        let type_width = match ann {
+            Some(FieldAnn::Enum(i)) => Some(ctx.model.enums[i].width),
+            Some(FieldAnn::Prim(Prim::Bool)) => Some(1),
+            Some(FieldAnn::Prim(p)) => Some(p.size() as u32 * 8),
+            None => None,
+        };
         let (start, width) = match f.bits {
             BitSpec::Full => (0, 8),
-            BitSpec::Bit(n) => (n, enum_width.unwrap_or(1)),
+            BitSpec::Bit(n) => (n, type_width.unwrap_or(1)),
             BitSpec::From(n) => (n, 8u32.saturating_sub(n)),
             BitSpec::Range(a, b) => (a, b - a),
         };
@@ -533,14 +590,18 @@ fn resolve_def(d: &Def, external: bool, ctx: &Ctx) -> Result<DefIr> {
         if width > 64 {
             return Err(ErrorSignals::at(f.line, format!("field is {width} bits wide, max is 64")));
         }
-        if let Some(ew) = enum_width.filter(|ew| *ew > width) {
-            return Err(ErrorSignals::at(
-                f.line,
-                format!("`{}` needs {ew} bits but the field has {width}", f.ty.as_deref().unwrap_or_default()),
-            ));
+        let ty_name = f.ty.as_deref().unwrap_or_default();
+        match (ann, type_width) {
+            (Some(FieldAnn::Enum(_)), Some(tw)) if tw > width => {
+                return Err(ErrorSignals::at(f.line, format!("`{ty_name}` needs {tw} bits but the field has {width}")));
+            }
+            (Some(FieldAnn::Prim(_)), Some(tw)) if width > tw => {
+                return Err(ErrorSignals::at(f.line, format!("a {width}-bit field does not fit `{ty_name}`")));
+            }
+            _ => {}
         }
-        let pos = f.byte * 8 + start as usize;
-        for bit in pos..pos + width as usize {
+        for i in 0..width {
+            let bit = phys_bit(f.byte, start, width, f.big, i);
             if !d.bytes.contains(&(bit / 8)) {
                 return Err(ErrorSignals::at(
                     f.line,
@@ -554,12 +615,15 @@ fn resolve_def(d: &Def, external: bool, ctx: &Ctx) -> Result<DefIr> {
                 ));
             }
         }
-        let ty = match enum_ty {
-            Some(i) => FieldTy::Enum(i),
+        let ty = match ann {
+            Some(FieldAnn::Enum(i)) => FieldTy::Enum(i),
+            Some(FieldAnn::Prim(Prim::Bool)) => FieldTy::Bool,
+            Some(FieldAnn::Prim(p)) if p.is_signed() => FieldTy::Sint(IntTy::for_bits(p.size() as u32 * 8)),
+            Some(FieldAnn::Prim(p)) => FieldTy::Uint(IntTy::for_bits(p.size() as u32 * 8)),
             None if width == 1 => FieldTy::Bool,
             None => FieldTy::Uint(IntTy::for_bits(width)),
         };
-        fields.push(FieldIr { name: f.name.clone(), pos, width, ty });
+        fields.push(FieldIr { name: f.name.clone(), byte: f.byte, start, width, big: f.big, ty });
     }
     Ok(DefIr {
         name: d.name.clone(),
@@ -585,10 +649,9 @@ impl Acc {
         Self { id_mask: 0, id_match: 0, data_mask: [0; MAX_PAYLOAD], data_match: [0; MAX_PAYLOAD] }
     }
 
-    fn set(&mut self, target: Target, start: usize, width: u32, pattern: u64) -> std::result::Result<(), String> {
-        for i in 0..width as usize {
+    fn set(&mut self, target: Target, bits: &[usize], pattern: u64) -> std::result::Result<(), String> {
+        for (i, &pos) in bits.iter().enumerate() {
             let want = (pattern >> i) & 1 != 0;
-            let pos = start + i;
             let (set, cur, what) = match target {
                 Target::Id => (self.id_mask >> pos & 1 != 0, self.id_match >> pos & 1 != 0, format!("id bit {pos}")),
                 Target::Data(_) => (
@@ -625,8 +688,8 @@ impl Acc {
     }
 }
 
-/// Absolute start bit and width of a condition (id bit, or payload bit for data).
-fn cond_span(c: &Cond) -> std::result::Result<(usize, u32), String> {
+/// Id bit or payload bit for each value bit of a condition, LSB first.
+fn cond_bits(c: &Cond) -> std::result::Result<Vec<usize>, String> {
     match c.target {
         Target::Id => {
             let (start, width) = match c.bits {
@@ -638,7 +701,7 @@ fn cond_span(c: &Cond) -> std::result::Result<(usize, u32), String> {
             if width == 0 || start + width > ID_BITS {
                 return Err(format!("id bits must be within 0..{ID_BITS}"));
             }
-            Ok((start as usize, width))
+            Ok((start as usize..(start + width) as usize).collect())
         }
         Target::Data(byte) => {
             let (start, width) = match c.bits {
@@ -653,11 +716,10 @@ fn cond_span(c: &Cond) -> std::result::Result<(usize, u32), String> {
             if width > 64 {
                 return Err(format!("condition is {width} bits wide, max is 64"));
             }
-            let pos = byte * 8 + start as usize;
-            if pos + width as usize > MAX_PAYLOAD * 8 {
+            if byte + (start + width).div_ceil(8) as usize > MAX_PAYLOAD {
                 return Err(format!("data bits reach beyond the {MAX_PAYLOAD}-byte payload"));
             }
-            Ok((pos, width))
+            Ok((0..width).map(|i| phys_bit(byte, start, width, c.big, i)).collect())
         }
     }
 }
@@ -753,10 +815,10 @@ fn pattern(v: Val, width: u32) -> std::result::Result<u64, String> {
 fn apply(f: &FilterDef, args: &[Val], acc: &mut Acc, ctx: &Ctx) -> std::result::Result<(), (usize, String)> {
     let env: HashMap<&str, Val> = f.params.iter().map(|p| p.name.as_str()).zip(args.iter().copied()).collect();
     for c in &f.conds {
-        let (start, width) = cond_span(c).map_err(|e| (c.line, e))?;
+        let bits = cond_bits(c).map_err(|e| (c.line, e))?;
         let val = eval(&c.value, &env, None, ctx).map_err(|e| (c.line, e))?;
-        let pat = pattern(val, width).map_err(|e| (c.line, e))?;
-        acc.set(c.target, start, width, pat).map_err(|e| (c.line, e))?;
+        let pat = pattern(val, bits.len() as u32).map_err(|e| (c.line, e))?;
+        acc.set(c.target, &bits, pat).map_err(|e| (c.line, e))?;
     }
     Ok(())
 }
@@ -768,7 +830,6 @@ fn validate_filter(f: &FilterDef, ctx: &Ctx) -> Result<()> {
     let mut names = HashSet::new();
     let mut placeholders = Vec::new();
     for p in &f.params {
-        check_name(&p.name, f.line)?;
         if !names.insert(p.name.as_str()) {
             return Err(ErrorSignals::at(f.line, format!("duplicate parameter `{}`", p.name)));
         }
@@ -812,7 +873,9 @@ fn eval_expr(expr: &FilterExpr, ctx: &Ctx) -> Result<FilterIr> {
 
 /// Bits written by a def or frame (fields and, for frames, their own filter).
 fn slot_bits(slot: Slot, model: &Model) -> Vec<usize> {
-    let def_bits = |d: usize| model.defs[d].fields.iter().flat_map(|f| f.pos..f.pos + f.width as usize).collect::<Vec<_>>();
+    let def_bits = |d: usize| {
+        model.defs[d].fields.iter().flat_map(|f| (0..f.width).map(|i| f.bit_pos(i))).collect::<Vec<_>>()
+    };
     match slot {
         Slot::Def(d) => def_bits(d),
         Slot::Frame(fr) => model.frames[fr].members.iter().flat_map(|(_, d)| def_bits(*d)).collect(),
@@ -981,7 +1044,7 @@ fn resolve_fn(f: &FnDef, external: bool, ctx: &Ctx) -> Result<FnIr> {
             (Some(slot), Some(filter), finish_size(end, f.fd, ln, "response")?)
         }
     };
-    Ok(FnIr { name: f.name.clone(), params, req_size, ret, rsp, rsp_size, fd: f.fd, external })
+    Ok(FnIr { name: f.name.clone(), params, req_size, ret, rsp, rsp_size, fd: f.fd, big: f.big, external })
 }
 
 fn post_inc(n: &mut usize) -> usize {
@@ -999,7 +1062,7 @@ mod tests {
 
     #[test]
     fn chunks_span_bytes() {
-        let f = FieldIr { name: "x".into(), pos: 2 * 8 + 4, width: 10, ty: FieldTy::Uint(IntTy::U16) };
+        let mut f = FieldIr { name: "x".into(), byte: 2, start: 4, width: 10, big: false, ty: FieldTy::Uint(IntTy::U16) };
         assert_eq!(
             f.chunks(),
             vec![
@@ -1007,6 +1070,22 @@ mod tests {
                 Chunk { byte: 3, shift: 0, mask: 0x3F, vshift: 4 },
             ]
         );
+        f.big = true;
+        assert_eq!(
+            f.chunks(),
+            vec![
+                Chunk { byte: 3, shift: 4, mask: 0x0F, vshift: 0 },
+                Chunk { byte: 2, shift: 0, mask: 0x3F, vshift: 4 },
+            ]
+        );
+    }
+
+    #[test]
+    fn big_endian_right_aligned() {
+        // 12-bit value in bytes 0..2, MSB nibble in byte 0 (Motorola layout).
+        let bits: Vec<usize> = (0..12).map(|i| phys_bit(0, 0, 12, true, i)).collect();
+        assert_eq!(bits[..8], [8, 9, 10, 11, 12, 13, 14, 15]);
+        assert_eq!(bits[8..], [0, 1, 2, 3]);
     }
 
     #[test]

@@ -4,6 +4,8 @@
 pub struct Proto {
     /// `#inc=<name>` directives: (include name, line).
     pub includes: Vec<(String, usize)>,
+    /// `#endian=big` file default; applies to fields, data conditions and fn payloads.
+    pub big_endian: bool,
     pub items: Vec<Item>,
 }
 
@@ -74,6 +76,8 @@ pub struct Field {
     pub byte: usize,
     pub bits: BitSpec,
     pub ty: Option<String>,
+    /// Big-endian: the section byte is the most significant byte.
+    pub big: bool,
 }
 
 /// Bit positions; bit 0 is the LSB.
@@ -155,6 +159,8 @@ pub struct Cond {
     pub target: Target,
     pub bits: BitSpec,
     pub value: Value,
+    /// Byte order for data conditions spanning several bytes.
+    pub big: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -187,4 +193,6 @@ pub struct FnDef {
     pub ret: Option<String>,
     pub rsp: Option<FilterExpr>,
     pub fd: bool,
+    /// Byte order of standard-type parameters and return values.
+    pub big: bool,
 }

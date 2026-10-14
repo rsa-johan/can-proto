@@ -30,6 +30,16 @@ fn rejects_overlapping_filters() {
 }
 
 #[test]
+fn signed_and_big_endian_fields() {
+    let src = "#endian=big\ndef {0,1} R:\n.rpm 0..12 i16\n.t 4 little\nfn S(a: u16): Void\n";
+    let g = proto_c::compile_str(src, "t", "t.cp").unwrap();
+    assert!(g.rust.contains("pub rpm: i16,"));
+    assert!(g.rust.contains("let v = (buf[1] as u64) | (((buf[0] & 0x0F) as u64) << 8);"), "{}", g.rust);
+    assert!(g.rust.contains("to_be_bytes"));
+    assert!(g.c.contains("m->rpm = (int16_t)((v & 0x800u) ? -(int64_t)(~v & 0xFFFu) - 1 : (int64_t)v);"));
+}
+
+#[test]
 fn rejects_conflicting_pipe() {
     let src = "filter A:\n.id 0 1\nfilter B:\n.id 0 0\ndef {0} D:\n.x 0\nframe X:\n.filter A | B\n.D\n";
     let err = proto_c::compile_str(src, "t", "t.cp").unwrap_err();

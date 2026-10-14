@@ -3,16 +3,17 @@
 //! ```text
 //! #protocol=can                  -- optional directives, before any block
 //! #inc=common                    -- include common.inc.cp from the same directory
+//! #endian=big                    -- default byte order of this file (little if omitted)
 //! type Name:                     -- enum
 //! .variant <int>
 //! def {b0[,b1..]} Name:          -- bit-field group pinned to payload bytes
 //! [#b1]                          -- switch to byte b1 (multi-byte defs)
-//! .field <bits> [Type]           -- bits: `n`, `n..`, `a..b`, `a..=b`, `..`
+//! .field <bits> [Type] [big|little] -- Type: enum, bool, u8..u64, i8..i64 (signed = sign-extended)
 //! spec:                          -- constants, standard types only
 //! .name <literal> [type]
 //! filter Name[(p: Type, ..)]:    -- raw bit matches, independent of other filters
 //! .id <bits> <value>
-//! .data {b} <bits> <value>
+//! .data {b} <bits> <value> [big|little]
 //! frame Name:
 //! .size 'N | .fd [bool] | .filter A | B(args) | .DefName
 //! fn Name(p: Type, ..): Ret|Void
@@ -36,6 +37,17 @@ use super::{
 type Result<T> = std::result::Result<T, ErrorSignals>;
 
 const INC_DIRECTIVE: &str = "#inc=";
+const ENDIAN_DIRECTIVE: &str = "#endian=";
+const BIG: &str = "big";
+const LITTLE: &str = "little";
+
+fn endian(tok: &str) -> Option<bool> {
+    match tok {
+        BIG => Some(true),
+        LITTLE => Some(false),
+        _ => None,
+    }
+}
 
 pub fn parse(src: &str) -> Result<Proto> {
     let mut proto = Proto::default();
@@ -59,6 +71,11 @@ pub fn parse(src: &str) -> Result<Proto> {
                     return Err(ErrorSignals::at(ln, format!("invalid include `{name}`, expected `#inc=<name>`")));
                 }
                 proto.includes.push((name.to_string(), ln));
+                continue;
+            }
+            if let Some(order) = line.strip_prefix(ENDIAN_DIRECTIVE) {
+                proto.big_endian = endian(order.trim())
+                    .ok_or_else(|| ErrorSignals::at(ln, format!("expected `#endian={BIG}` or `#endian={LITTLE}`")))?;
                 continue;
             }
             match type_protocol(line) {
@@ -93,13 +110,13 @@ pub fn parse(src: &str) -> Result<Proto> {
             let Some(item) = cur.as_mut() else {
                 return Err(ErrorSignals::at(ln, "member line outside of a block"));
             };
-            parse_member(item, section, member, ln)?;
+            parse_member(item, section, member, proto.big_endian, ln)?;
             continue;
         }
 
         let (kw, _) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
         let item = if matches!(KeyWords::from(kw), KeyWords::Fn) {
-            parse_fn_header(line[kw.len()..].trim(), ln)?
+            parse_fn_header(line[kw.len()..].trim(), proto.big_endian, ln)?
         } else {
             let header = line
                 .strip_suffix(':')
@@ -195,7 +212,7 @@ fn parse_params(s: &str, ln: usize) -> Result<Vec<Param>> {
 }
 
 /// `Name(params): Ret`
-fn parse_fn_header(s: &str, ln: usize) -> Result<Item> {
+fn parse_fn_header(s: &str, big: bool, ln: usize) -> Result<Item> {
     let close = s.find(')').ok_or_else(|| ErrorSignals::at(ln, "expected `fn Name(params): Ret`"))?;
     let (name, params) = parse_signature(&s[..=close], ln)?;
     let ret = s[close + 1..]
@@ -211,6 +228,7 @@ fn parse_fn_header(s: &str, ln: usize) -> Result<Item> {
         ret: (ret != "Void").then_some(ret),
         rsp: None,
         fd: false,
+        big,
     }))
 }
 
@@ -242,7 +260,7 @@ fn parse_filter_expr(s: &str, ln: usize) -> Result<FilterExpr> {
     Ok(FilterExpr { line: ln, calls })
 }
 
-fn parse_member(item: &mut Item, section: Option<usize>, member: &str, ln: usize) -> Result<()> {
+fn parse_member(item: &mut Item, section: Option<usize>, member: &str, big_default: bool, ln: usize) -> Result<()> {
     let toks: Vec<&str> = member.split_whitespace().collect();
     let Some((&name, args)) = toks.split_first() else {
         return Err(ErrorSignals::at(ln, "empty member line"));
@@ -259,14 +277,20 @@ fn parse_member(item: &mut Item, section: Option<usize>, member: &str, ln: usize
             t.variants.push(Variant { name, value, line: ln });
         }
         Item::Def(d) => {
-            let (bits, ty) = match args {
-                [bits] => (bits, None),
-                [bits, ty] => (bits, Some(ident(ty, ln)?)),
-                _ => return Err(ErrorSignals::at(ln, "expected `.field <bits> [Type]`")),
+            let Some((bits, extra)) = args.split_first() else {
+                return Err(ErrorSignals::at(ln, "expected `.field <bits> [Type] [big|little]`"));
             };
+            let (mut ty, mut big) = (None, None);
+            for tok in extra {
+                match endian(tok) {
+                    Some(b) if big.is_none() => big = Some(b),
+                    None if ty.is_none() => ty = Some(ident(tok, ln)?),
+                    _ => return Err(ErrorSignals::at(ln, "expected `.field <bits> [Type] [big|little]`")),
+                }
+            }
             let bits = parse_bits(bits).ok_or_else(|| ErrorSignals::at(ln, format!("invalid bit spec `{bits}`")))?;
             let byte = section.unwrap_or(d.bytes[0]);
-            d.fields.push(Field { name, line: ln, byte, bits, ty });
+            d.fields.push(Field { name, line: ln, byte, bits, ty, big: big.unwrap_or(big_default) });
         }
         Item::Spec(s) => {
             let (value, ty) = match args {
@@ -279,6 +303,10 @@ fn parse_member(item: &mut Item, section: Option<usize>, member: &str, ln: usize
             s.entries.push(SpecEntry { name, line: ln, value, ty });
         }
         Item::Filter(f) => {
+            let (args, big) = match args.split_last() {
+                Some((last, rest)) if endian(last).is_some() => (rest, endian(last).unwrap_or(big_default)),
+                _ => (args, big_default),
+            };
             let (target, bits, value) = match (FrameKeyWords::from(name.as_str()), args) {
                 (FrameKeyWords::Id, [bits, value]) => (Target::Id, bits, value),
                 (FrameKeyWords::Data, [byte, bits, value]) => {
@@ -288,11 +316,16 @@ fn parse_member(item: &mut Item, section: Option<usize>, member: &str, ln: usize
                     };
                     (Target::Data(byte), bits, value)
                 }
-                _ => return Err(ErrorSignals::at(ln, "expected `.id <bits> <value>` or `.data {byte} <bits> <value>`")),
+                _ => {
+                    return Err(ErrorSignals::at(
+                        ln,
+                        "expected `.id <bits> <value>` or `.data {byte} <bits> <value> [big|little]`",
+                    ))
+                }
             };
             let bits = parse_bits(bits).ok_or_else(|| ErrorSignals::at(ln, format!("invalid bit spec `{bits}`")))?;
             let value = parse_value(value).ok_or_else(|| ErrorSignals::at(ln, format!("invalid value `{value}`")))?;
-            f.conds.push(Cond { line: ln, target, bits, value });
+            f.conds.push(Cond { line: ln, target, bits, value, big });
         }
         Item::Frame(f) => match FrameKeyWords::from(name.as_str()) {
             FrameKeyWords::Size => {

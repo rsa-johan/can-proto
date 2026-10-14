@@ -27,6 +27,7 @@ The compiler is also a library (`proto_c::compile_package`, `compile_file`, `com
 ```text
 #protocol=can        -- optional; `#ignore=` skips the file
 #inc=common          -- common.inc.cp from the same directory (nesting allowed, cycles rejected)
+#endian=big          -- default byte order of this file (little if omitted)
 ```
 
 `.inc.cp` files may contain `type`, `def`, `spec` and `filter`, but not `frame` or `fn`. Each is generated once and imported by the files that include it.
@@ -47,9 +48,15 @@ def {2,3} TemperatureError: -- `[#n]` selects the byte for the following fields
 .level 1..4                 -- bits 1..3 -> u8 (also `1..=3`, `4..`, `..` = whole byte)
 [#3]
 .temp8 0
+
+def {4,5} Motor:
+.rpm 0..12 i16 big          -- signed (sign-extended on decode), big-endian override
+.dir 4 bool
 ```
 
-Fields may run into the next declared byte (little-endian). Enums are range-checked on decode.
+A field's type can be an enum, `bool`, `u8`..`u64` or `i8`..`i64`. Without a type, 1 bit means `bool` and wider fields get the smallest fitting unsigned type. Enums are range-checked on decode.
+
+**Byte order.** Bits are numbered LSB-first across the bytes a field spans, starting at its section byte. Those bytes are read as one little-endian number (default) or big-endian number (`big`, or `#endian=big`). With `big`, the section byte is the most significant byte. `[#0] .x 0..12 big` is the usual Motorola layout: high nibble in byte 0, low byte in byte 1. The file's byte order also applies to `.data` filter conditions and to standard-type fn parameters and return values.
 
 ### Spec (constants)
 

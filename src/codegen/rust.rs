@@ -121,6 +121,7 @@ fn field_ty(model: &Model, f: &FieldIr) -> String {
     match f.ty {
         FieldTy::Bool => "bool".into(),
         FieldTy::Uint(t) => t.rust().into(),
+        FieldTy::Sint(t) => t.rust_signed().into(),
         FieldTy::Enum(i) => model.enums[i].name.clone(),
     }
 }
@@ -203,6 +204,12 @@ fn decode_expr(model: &Model, f: &FieldIr) -> String {
     match f.ty {
         FieldTy::Bool => format!("{raw} != 0"),
         FieldTy::Uint(t) => format!("({raw}) as {}", t.rust()),
+        FieldTy::Sint(t) if f.width == 64 => format!("({raw}) as {}", t.rust_signed()),
+        FieldTy::Sint(t) => format!(
+            "{{\n                let v = {raw};\n                ((v << {s}) as i64 >> {s}) as {}\n            }}",
+            t.rust_signed(),
+            s = 64 - f.width
+        ),
         FieldTy::Enum(i) => format!(
             "{{\n                let v = {raw};\n                {}::from_raw(v).ok_or(CodecError::InvalidEnum {{ field: \"{}\", value: v }})?\n            }}",
             model.enums[i].name, f.name
@@ -289,22 +296,24 @@ fn slot_ty(model: &Model, slot: Slot) -> String {
     }
 }
 
-fn store_prim(p: Prim, src: &str, off: usize) -> String {
+fn store_prim(p: Prim, src: &str, off: usize, big: bool) -> String {
+    let order = if big { "be" } else { "le" };
     match p {
         Prim::Bool => format!("buf[{off}] = {src} as u8;"),
         Prim::U8 => format!("buf[{off}] = {src};"),
         Prim::I8 => format!("buf[{off}] = {src} as u8;"),
-        _ => format!("buf[{off}..{}].copy_from_slice(&{src}.to_le_bytes());", off + p.size()),
+        _ => format!("buf[{off}..{}].copy_from_slice(&{src}.to_{order}_bytes());", off + p.size()),
     }
 }
 
-fn load_prim(p: Prim, buf: &str, off: usize) -> String {
+fn load_prim(p: Prim, buf: &str, off: usize, big: bool) -> String {
+    let order = if big { "be" } else { "le" };
     match p {
         Prim::Bool => format!("{buf}[{off}] != 0"),
         Prim::U8 => format!("{buf}[{off}]"),
         _ => {
             let bytes = (off..off + p.size()).map(|i| format!("{buf}[{i}]")).collect::<Vec<_>>().join(", ");
-            format!("{}::from_le_bytes([{bytes}])", p.rust())
+            format!("{}::from_{order}_bytes([{bytes}])", p.rust())
         }
     }
 }
@@ -334,7 +343,7 @@ fn gen_fn(o: &mut String, model: &Model, f: &FnIr) {
     }
     for p in &f.params {
         let expr = match p.slot {
-            Slot::Prim(t, off) => load_prim(t, "buf", off),
+            Slot::Prim(t, off) => load_prim(t, "buf", off, f.big),
             _ => format!("{}::decode(buf)?", slot_ty(model, p.slot)),
         };
         let _ = writeln!(o, "            {}: {expr},", p.name);
@@ -345,7 +354,7 @@ fn gen_fn(o: &mut String, model: &Model, f: &FnIr) {
     let _ = writeln!(o, "    fn write(&self, {buf}: &mut [u8]) {{");
     for p in &f.params {
         let line = match p.slot {
-            Slot::Prim(t, off) => store_prim(t, &format!("self.{}", p.name), off),
+            Slot::Prim(t, off) => store_prim(t, &format!("self.{}", p.name), off, f.big),
             _ => format!("self.{}.write(buf);", p.name),
         };
         let _ = writeln!(o, "        {line}");
@@ -363,7 +372,7 @@ fn gen_fn(o: &mut String, model: &Model, f: &FnIr) {
     let _ = writeln!(o, "        check_len(data.len(), Self::RSP_SIZE)?;");
     match ret {
         Slot::Prim(t, off) => {
-            let _ = writeln!(o, "        Ok({})", load_prim(t, "data", off));
+            let _ = writeln!(o, "        Ok({})", load_prim(t, "data", off, f.big));
         }
         _ => {
             let _ = writeln!(o, "        {ret_ty}::decode(data)");
@@ -377,7 +386,7 @@ fn gen_fn(o: &mut String, model: &Model, f: &FnIr) {
     let _ = writeln!(o, "        check_len(buf.len(), Self::RSP_SIZE)?;\n        buf[..Self::RSP_SIZE].fill(0);");
     match ret {
         Slot::Prim(t, off) => {
-            let _ = writeln!(o, "        {}", store_prim(t, "value", off));
+            let _ = writeln!(o, "        {}", store_prim(t, "value", off, f.big));
         }
         _ => {
             let _ = writeln!(o, "        value.write(buf);");

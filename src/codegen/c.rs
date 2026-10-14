@@ -98,6 +98,7 @@ fn field_ty(model: &Model, f: &FieldIr) -> String {
     match f.ty {
         FieldTy::Bool => "bool".into(),
         FieldTy::Uint(t) => t.c().into(),
+        FieldTy::Sint(t) => t.c_signed().into(),
         FieldTy::Enum(i) => model.enums[i].name.clone(),
     }
 }
@@ -168,6 +169,20 @@ fn gen_def(o: &mut String, model: &Model, d: &DefIr) {
             }
             FieldTy::Uint(t) => {
                 let _ = writeln!(o, "    m->{} = ({})v;", f.name, t.c());
+            }
+            FieldTy::Sint(t) => {
+                // Portable sign extension: no signed shifts or out-of-range conversions.
+                let lit = |x: u64| if x > u64::from(u32::MAX) { format!("0x{x:X}ULL") } else { format!("0x{x:X}u") };
+                let sign = 1u64 << (f.width - 1);
+                let mask = if f.width == 64 { u64::MAX } else { (1u64 << f.width) - 1 };
+                let _ = writeln!(
+                    o,
+                    "    m->{} = ({})((v & {}) ? -(int64_t)(~v & {}) - 1 : (int64_t)v);",
+                    f.name,
+                    t.c_signed(),
+                    lit(sign),
+                    lit(mask)
+                );
             }
             FieldTy::Enum(i) => {
                 let e = &model.enums[i].name;
@@ -268,12 +283,13 @@ fn unsigned_of(p: Prim) -> &'static str {
     }
 }
 
-fn store_prim(p: Prim, src: &str, off: usize) -> String {
+fn store_prim(p: Prim, src: &str, off: usize, big: bool) -> String {
+    let at = |i: usize| if big { off + p.size() - 1 - i } else { off + i };
     let byte = |i: usize, u: &str| {
         if i == 0 {
-            format!("    buf[{}] = (uint8_t){u};\n", off)
+            format!("    buf[{}] = (uint8_t){u};\n", at(i))
         } else {
-            format!("    buf[{}] = (uint8_t)({u} >> {});\n", off + i, 8 * i)
+            format!("    buf[{}] = (uint8_t)({u} >> {});\n", at(i), 8 * i)
         }
     };
     match p {
@@ -294,9 +310,10 @@ fn store_prim(p: Prim, src: &str, off: usize) -> String {
     }
 }
 
-fn load_prim(p: Prim, buf: &str, off: usize, dst: &str) -> String {
+fn load_prim(p: Prim, buf: &str, off: usize, big: bool, dst: &str) -> String {
+    let at = |i: usize| if big { off + p.size() - 1 - i } else { off + i };
     let raw = (0..p.size())
-        .map(|i| if i == 0 { format!("(uint64_t){buf}[{off}]") } else { format!("((uint64_t){buf}[{}] << {})", off + i, 8 * i) })
+        .map(|i| if i == 0 { format!("(uint64_t){buf}[{}]", at(i)) } else { format!("((uint64_t){buf}[{}] << {})", at(i), 8 * i) })
         .collect::<Vec<_>>()
         .join(" | ");
     match p {
@@ -329,7 +346,7 @@ fn gen_fn(o: &mut String, f: &FnIr, model: &Model) {
         let _ = writeln!(o, "    for (i = 0; i < {macro_}_REQUEST_SIZE; ++i) buf[i] = 0;");
         for p in &f.params {
             match p.slot {
-                Slot::Prim(t, off) => o.push_str(&store_prim(t, &format!("m->{}", p.name), off)),
+                Slot::Prim(t, off) => o.push_str(&store_prim(t, &format!("m->{}", p.name), off, f.big)),
                 _ => {
                     let _ = writeln!(o, "    {}_write(&m->{}, buf);", slot_ty(model, p.slot), p.name);
                 }
@@ -345,7 +362,7 @@ fn gen_fn(o: &mut String, f: &FnIr, model: &Model) {
         let _ = writeln!(o, "    if (len < {macro_}_REQUEST_SIZE) return PROTO_C_ERR_SHORT_BUFFER;");
         for p in &f.params {
             match p.slot {
-                Slot::Prim(t, off) => o.push_str(&load_prim(t, "buf", off, &format!("m->{}", p.name))),
+                Slot::Prim(t, off) => o.push_str(&load_prim(t, "buf", off, f.big, &format!("m->{}", p.name))),
                 _ => {
                     let _ = writeln!(
                         o,
@@ -368,7 +385,7 @@ fn gen_fn(o: &mut String, f: &FnIr, model: &Model) {
     let _ = writeln!(o, "    if (len < {macro_}_RSP_SIZE) return PROTO_C_ERR_SHORT_BUFFER;");
     match ret {
         Slot::Prim(t, off) => {
-            o.push_str(&load_prim(t, "data", off, "*out"));
+            o.push_str(&load_prim(t, "data", off, f.big, "*out"));
             let _ = writeln!(o, "    return PROTO_C_OK;");
         }
         _ => {
@@ -383,7 +400,7 @@ fn gen_fn(o: &mut String, f: &FnIr, model: &Model) {
     let _ = writeln!(o, "    if (len < {macro_}_RSP_SIZE) return PROTO_C_ERR_SHORT_BUFFER;");
     let _ = writeln!(o, "    for (i = 0; i < {macro_}_RSP_SIZE; ++i) buf[i] = 0;");
     match ret {
-        Slot::Prim(t, off) => o.push_str(&store_prim(t, "value", off)),
+        Slot::Prim(t, off) => o.push_str(&store_prim(t, "value", off, f.big)),
         _ => {
             let _ = writeln!(o, "    {ret_ty}_write(value, buf);");
         }
