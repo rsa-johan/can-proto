@@ -7,8 +7,10 @@ pub enum KeyWords {
     Def,
     Hash,
     Dot,
-    FrameDef,
     Frame,
+    Filter,
+    Spec,
+    Fn,
     Nil
 }
 
@@ -16,7 +18,10 @@ pub enum KeyWords {
 pub enum FrameKeyWords {
     Size,
     Id,
+    Data,
     Fd,
+    Filter,
+    Rsp,
     SizeMark,
     Nil
 }
@@ -29,8 +34,10 @@ impl From<KeyWords> for &str {
             KeyWords::Def => "def",
             KeyWords::Hash => "#",
             KeyWords::Dot => ".",
-            KeyWords::FrameDef => "framedef",
             KeyWords::Frame => "frame",
+            KeyWords::Filter => "filter",
+            KeyWords::Spec => "spec",
+            KeyWords::Fn => "fn",
             KeyWords::Nil => "nil",
         }
     }
@@ -43,8 +50,10 @@ impl From<&str> for KeyWords {
             "def" => KeyWords::Def,
             "#" => KeyWords::Hash,
             "." => KeyWords::Dot,
-            "framedef" => KeyWords::FrameDef,
             "frame" => KeyWords::Frame,
+            "filter" => KeyWords::Filter,
+            "spec" => KeyWords::Spec,
+            "fn" => KeyWords::Fn,
             _ => KeyWords::Nil
         }
     }
@@ -56,7 +65,10 @@ impl From<FrameKeyWords> for &str {
         match value {
             FrameKeyWords::Size => "size",
             FrameKeyWords::Id => "id",
+            FrameKeyWords::Data => "data",
             FrameKeyWords::Fd => "fd",
+            FrameKeyWords::Filter => "filter",
+            FrameKeyWords::Rsp => "rsp",
             FrameKeyWords::SizeMark => "'",
             FrameKeyWords::Nil => "nil",
         }
@@ -68,7 +80,10 @@ impl From<&str> for FrameKeyWords {
         match value.to_lowercase().as_str() {
             "size" => FrameKeyWords::Size,
             "id" => FrameKeyWords::Id,
+            "data" => FrameKeyWords::Data,
             "fd" => FrameKeyWords::Fd,
+            "filter" => FrameKeyWords::Filter,
+            "rsp" => FrameKeyWords::Rsp,
             "'" => FrameKeyWords::SizeMark,
             _ => FrameKeyWords::Nil
         }

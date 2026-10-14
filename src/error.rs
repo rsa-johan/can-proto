@@ -9,8 +9,36 @@ pub enum ErrorSignals {
     EmptyHeader,
 
     RootFileNotFound,
-    NoError
+    UnsupportedProtocol,
+    NoError,
+
+    /// Parse or validation error at a 1-based source line.
+    At { line: usize, msg: String },
 }
+
+impl ErrorSignals {
+    pub(crate) fn at(line: usize, msg: impl Into<String>) -> Self {
+        Self::At { line, msg: msg.into() }
+    }
+}
+
+impl std::fmt::Display for ErrorSignals {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Generic(s) => write!(f, "{s}"),
+            Self::NotDir => write!(f, "not a directory"),
+            Self::InvalidHeader => write!(f, "invalid header (expected `#protocol=<name>`)"),
+            Self::UnidentifiableHeader => write!(f, "unidentifiable header"),
+            Self::EmptyHeader => write!(f, "empty header"),
+            Self::RootFileNotFound => write!(f, "root file not found"),
+            Self::UnsupportedProtocol => write!(f, "unsupported protocol (only `can` is supported)"),
+            Self::NoError => write!(f, "ignored"),
+            Self::At { line, msg } => write!(f, "line {line}: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for ErrorSignals {}
 
 
 // impl From<ErrorSignals> for String {

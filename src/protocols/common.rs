@@ -8,7 +8,8 @@ const HEADER_PROTOCOL_DEF_LEN: usize = HEADER_PROTOCOL_DEF.len();
 const HEADER_IGNORE_DEF: &str = "ignore=";
 
 
-enum Protocols {
+#[derive(Debug, PartialEq)]
+pub(crate) enum Protocols {
     Can,
     Nil
 }
@@ -23,22 +24,26 @@ impl From<&str> for Protocols {
 }
 
 
-fn type_protocol(root_header: String) -> Result<Protocols, ErrorSignals> {
+pub(crate) fn type_protocol(root_header: &str) -> Result<Protocols, ErrorSignals> {
+    let root_header = root_header.trim();
+    if root_header.is_empty() {
+        return Err(ErrorSignals::EmptyHeader);
+    }
     if !root_header.starts_with(HEADER_IDENTIFIER) {
         return Err(ErrorSignals::InvalidHeader);
     }
 
-    let header_cnt = &root_header[1..];
+    let header_cnt = &root_header[HEADER_IDENTIFIER.len()..];
     if HEADER_IGNORE_DEF == header_cnt {
         return Err(ErrorSignals::NoError);
     }
 
-    if HEADER_PROTOCOL_DEF != &header_cnt[..HEADER_PROTOCOL_DEF_LEN] {
+    if !header_cnt.starts_with(HEADER_PROTOCOL_DEF) {
         return Err(ErrorSignals::UnidentifiableHeader);
     }
 
 
     let header_val = &header_cnt[HEADER_PROTOCOL_DEF_LEN..];
 
-    return Ok(header_val.into());
+    return Ok(header_val.trim().to_ascii_lowercase().as_str().into());
 }

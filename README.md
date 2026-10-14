@@ -1,132 +1,134 @@
 # proto_c
 
-A procedural macro for generating Rust code from `.cproto` CAN frame definition files.
-
-## Overview
-
-This crate provides a `include_cproto!` macro that parses `.cproto` files and generates Rust code for working with CAN frames, similar to how Protocol Buffers work.
-
-## `.cproto` File Format
-
-The `.cproto` format supports:
-
-### Enums
-```
-enum_t NodeId = {
-    FCU = 0x00
-    MCU = 0x01
-}
-```
-
-### Byte Definitions (Bit Fields)
-```
-Byte Status = {
-    StatusId = 0
-    ErrorDetected = 1
-    Reserved = ..
-}
-```
-
-### Frame Definitions
-```
-frame MockFrame {
-    ID {
-        NodeId | Priority | 0x00
-    }
-    byte Status
-}
-```
+Compiler for `.cp` CAN definitions. Generates Rust modules and C99 headers with typed payload structs, encode/decode functions, acceptance filters and RPC-style request/response helpers.
 
 ## Usage
 
-### 1. Add Dependency
-
-Add to your `Cargo.toml`:
-
-```toml
-[dependencies]
-proto_c = { path = "../proto_c" }
+```sh
+cargo run -- protos/examples -o generated          # package -> generated/{rust,c}/examples/
+cargo run -- protos/examples/dummy.cp -o generated  # one self-contained file (includes inlined)
+cargo run -- --check protos/examples                # validate only
+cargo run -- --lang c --c-out firmware/inc protos/examples
 ```
 
-### 2. Create `.cproto` File
+A directory is compiled as a **package**. `x.cp` becomes module/header `x` and `x.inc.cp` becomes `x_inc`. Rust also gets a `mod.rs` holding the shared prelude.
 
-Create `protos/can.cproto`:
+- **Rust:** `mod examples;`
+- **C:** `#include "examples/dummy.h"`. Headers use only `static inline` functions, so no `.c` file is needed.
 
-```
-enum_t NodeId = {
-    FCU = 0x00
-    MCU = 0x01
-}
+The compiler is also a library (`proto_c::compile_package`, `compile_file`, `compile_str`) for use from `build.rs` or a proc-macro.
 
-enum_t Priority = {
-    NORMAL = 0x00
-    URGENT = 0x01
-}
+## Language
 
-Byte Status = {
-    StatusId = 0
-    ErrorDetected = 1
-    Reserved = ..
-}
+`--` or `//` starts a comment. Bit 0 is the LSB.
 
-frame MockFrame {
-    ID {
-        NodeId | Priority | 0x00
-    }
-    byte Status
-}
+### Directives and includes
+
+```text
+#protocol=can        -- optional; `#ignore=` skips the file
+#inc=common          -- common.inc.cp from the same directory (nesting allowed, cycles rejected)
 ```
 
-### 3. Use in Rust Code
+`.inc.cp` files may contain `type`, `def`, `spec` and `filter`, but not `frame` or `fn`. Each is generated once and imported by the files that include it.
+
+### Types and payload layout
+
+```text
+type Connection:            -- enum
+.connected 1
+.disconnected 0
+
+def {1} ConnectionStatus:   -- bit fields pinned to payload byte(s)
+.connected 0 Connection     -- typed field, width = bits the type needs
+
+def {2,3} TemperatureError: -- `[#n]` selects the byte for the following fields
+[#2]
+.temp0 0                    -- single bit -> bool
+.level 1..4                 -- bits 1..3 -> u8 (also `1..=3`, `4..`, `..` = whole byte)
+[#3]
+.temp8 0
+```
+
+Fields may run into the next declared byte (little-endian). Enums are range-checked on decode.
+
+### Spec (constants)
+
+```text
+spec:
+.node_id 0x02 u8            -- standard types only: bool u8..u64 i8..i64 f32 f64
+.gain 1.5                   -- type inferred when omitted
+```
+
+Use a spec value as `spec.node_id`.
+
+### Filters
+
+A filter matches raw bits of the CAN id and/or payload. Filters are independent of each other and can take parameters (standard types or enums):
+
+```text
+filter Node(node: NodeId):
+.id 8..11 node              -- CAN id bits 8..10 (29-bit range)
+
+filter Tag(tag: u8):
+.data {0} 0..4 tag          -- payload byte 0, bits 0..3
+```
+
+Values can be literals, parameters, `spec.x` or `Type.Variant`.
+
+Filters are combined with `|` at the point of use:
+
+```text
+frame CoprocStatus:
+.size '4
+.filter Node(spec.node_id) | Kind(Status) | Method(0)
+.ConnectionStatus
+.TemperatureError
+```
+
+The compiler rejects:
+- combined filters that set a bit to two different values
+- two filters in a package that could match the same frame
+- payload fields that overlap bits a filter checks (the encoders set those bits automatically)
+
+### Functions
+
+```text
+fn GetTemperature(): TemperatureError
+.rsp Node(spec.node_id) | Kind(GetResponse) | Method(1)
+
+fn Configure(motor: Motor, gain: f32, offset: i16): Void -- Void: no response
+.fd                                                     -- allow payloads over 8 bytes
+```
+
+The caller builds and sends the request with a CAN id of their choosing; `.rsp` identifies the reply.
+
+Parameters and return values can be standard types, `def`s or `frame`s:
+- Defs and frames keep their fixed bytes.
+- Standard types are packed little-endian into the next free bytes, skipping bytes that a `.rsp` filter checks.
+
+## Generated API (sketch)
 
 ```rust
-use proto_c::include_cproto;
-
-include_cproto!("protos/can.cproto");
-
-fn main() {
-    // Create a status byte with specific bits set
-    let status = Status::new()
-        .with_statusid(true)
-        .with_errordetected(false);
-    
-    println!("Status byte: 0x{:02X}", status.to_byte());
-    
-    // Create a CAN frame
-    let frame = MockFrame::new()
-        .with_status(status);
-    
-    let can_frame = frame.to_can_frame(NodeId::FCU, Priority::URGENT);
-    
-    println!("CAN Frame:");
-    println!("  ID: 0x{:08X}", can_frame.id);
-    println!("  Data: {:?}", can_frame.data);
+let bytes = SetFanSpeedRequest { value: 1200 }.to_bytes();           // send with your id
+if GetTemperature::is_response(rx.id, rx.data) {
+    let t: TemperatureError = GetTemperature::decode_response(rx.data)?;
 }
+let hw = (GetTemperature::RSP_ID_MASK, GetTemperature::RSP_ID_MATCH); // controller filter
 ```
 
-## Generated Code
-
-The macro generates:
-
-- **Enums** with `#[repr(u8)]` for each `enum_t` definition
-- **Structs** for each `Byte` definition with:
-  - Builder methods (`with_*`)
-  - Getter methods for each bit field
-  - `to_byte()` method for serialization
-  - `from_byte()` method for deserialization
-- **Frame structs** with:
-  - Builder pattern for setting fields
-  - `id()` method calculating the CAN ID
-  - `to_can_frame()` method generating the final frame
-
-## Example Output
-
+```c
+SetFanSpeedRequest req = { 1200 };
+SetFanSpeedRequest_encode(&req, buf, sizeof buf);
+if (GetTemperature_is_response(id, data, len))
+    GetTemperature_decode_response(&temp, data, len);
 ```
-Status byte: 0x01
-CAN Frame:
-  ID: 0x00000100
-  Data: [1]
-```
+
+## Layout
+
+- `src/tools/parser.rs`: line parser that builds the AST (`ast.rs`)
+- `src/tools/resolve.rs`: name resolution, validation, filter evaluation, payload layout (IR)
+- `src/protocols/can.rs`: CAN payload limits
+- `src/codegen/{rust,c}.rs`: code generators
 
 ## License
 
