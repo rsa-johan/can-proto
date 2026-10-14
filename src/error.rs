@@ -20,6 +20,14 @@ impl ErrorSignals {
     pub(crate) fn at(line: usize, msg: impl Into<String>) -> Self {
         Self::At { line, msg: msg.into() }
     }
+
+    /// Prefixes the message with a file name; `NoError` (ignored file) passes through.
+    pub(crate) fn in_file(self, name: &str) -> Self {
+        match self {
+            Self::NoError => self,
+            e => Self::Generic(format!("{name}: {e}")),
+        }
+    }
 }
 
 impl std::fmt::Display for ErrorSignals {

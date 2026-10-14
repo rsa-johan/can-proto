@@ -16,7 +16,7 @@ A directory is compiled as a **package**. `x.cp` becomes module/header `x` and `
 - **Rust:** `mod examples;`
 - **C:** `#include "examples/dummy.h"`. Headers use only `static inline` functions, so no `.c` file is needed.
 
-The compiler is also a library (`proto_c::compile_package`, `compile_file`, `compile_str`) for use from `build.rs` or a proc-macro.
+The compiler is also a library for use from `build.rs` or a proc-macro. `proto_c::compile(path)` takes a directory or a file and returns `Output::Package` or `Output::File`. `compile_package`, `compile_file` and `compile_str` are narrower variants.
 
 ## Language
 
@@ -132,6 +132,7 @@ if (GetTemperature_is_response(id, data, len))
 
 ## Layout
 
+- `src/init.rs`: entry stage that loads a package or file, parses each file once, and links `#inc=` closures (missing files, cycles, ignored includes)
 - `src/tools/parser.rs`: line parser that builds the AST (`ast.rs`)
 - `src/tools/resolve.rs`: name resolution, validation, filter evaluation, payload layout (IR)
 - `src/protocols/can.rs`: CAN payload limits

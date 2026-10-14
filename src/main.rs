@@ -1,6 +1,6 @@
 use std::{fs, path::{Path, PathBuf}, process::ExitCode};
 
-use proto_c::{compile_file, compile_package, ErrorSignals, Generated};
+use proto_c::{compile, ErrorSignals, Generated, Output};
 
 const USAGE: &str = "\
 Compile CAN proto (.cp) definitions into Rust modules and C headers.
@@ -86,48 +86,39 @@ fn emit(args: &Args, sub: &str, module: &str, g: &Generated) -> Result<(), Strin
     Ok(())
 }
 
+fn write_output(args: &Args, input: &Path, output: &Output) -> Result<(), String> {
+    match output {
+        Output::Package(pkg) => {
+            println!("compiled package `{}` ({} file(s))", pkg.name, pkg.units.len());
+            for s in &pkg.skipped {
+                println!("  skipped {s} (ignored by header)");
+            }
+            if let (Some(dir), false) = (&args.rust_out, args.check) {
+                write(&dir.join(&pkg.name), "mod.rs", &pkg.mod_rs)?;
+            }
+            pkg.units.iter().try_for_each(|(module, g)| emit(args, &pkg.name, module, g))
+        }
+        Output::File { module, generated } => {
+            println!("compiled {}", input.display());
+            emit(args, "", module, generated)
+        }
+    }
+}
+
 fn run(args: Args) -> Result<(), String> {
     let mut failed = 0;
     for input in &args.inputs {
-        let result = if input.is_dir() {
-            compile_package(input).map(|pkg| {
-                println!("compiled package `{}` ({} file(s))", pkg.name, pkg.units.len());
-                for s in &pkg.skipped {
-                    println!("  skipped {s} (ignored by header)");
-                }
-                let mut out = Ok(());
-                if let (Some(dir), false) = (&args.rust_out, args.check) {
-                    out = write(&dir.join(&pkg.name), "mod.rs", &pkg.mod_rs);
-                }
-                for (module, g) in &pkg.units {
-                    out = out.and_then(|_| emit(&args, &pkg.name, module, g));
-                }
-                if let Err(e) = out {
-                    eprintln!("error: {e}");
-                    failed += 1;
-                }
-            })
-        } else {
-            compile_file(input).map(|g| {
-                println!("compiled {}", input.display());
-                let name = input.file_name().and_then(|s| s.to_str()).unwrap_or("proto.cp");
-                let module = match name.strip_suffix(".inc.cp") {
-                    Some(base) => format!("{base}_inc"),
-                    None => name.strip_suffix(".cp").unwrap_or(name).to_string(),
-                };
-                if let Err(e) = emit(&args, "", &module, &g) {
-                    eprintln!("error: {e}");
-                    failed += 1;
-                }
-            })
-        };
-        match result {
-            Ok(()) => {}
-            Err(ErrorSignals::NoError) => println!("skipped {} (ignored by header)", input.display()),
-            Err(e) => {
-                eprintln!("error: {e}");
-                failed += 1;
+        let result = match compile(input) {
+            Ok(output) => write_output(&args, input, &output),
+            Err(ErrorSignals::NoError) => {
+                println!("skipped {} (ignored by header)", input.display());
+                Ok(())
             }
+            Err(e) => Err(e.to_string()),
+        };
+        if let Err(e) = result {
+            eprintln!("error: {e}");
+            failed += 1;
         }
     }
 
